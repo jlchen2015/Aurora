@@ -20,6 +20,7 @@ package_name='aurorafusion'
 
 with open('README.md', 'r') as fh:
     long_description = fh.read()
+#long_description='See documentation at https://aurora-fusion.readthedocs.io'
 
 wrapper = Extension(name='aurora._aurora', 
                     sources=['aurora/main.f90',
@@ -27,35 +28,31 @@ wrapper = Extension(name='aurora._aurora',
                              'aurora/impden.f90',
                              'aurora/math.f90'])
 
-# use local makefile and avoid numpy's Extension class...
-#cmd = 'make clean; make aurora'
-#result = subprocess.call(cmd, shell=True) 
-
-
 aurora_dir = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(aurora_dir, 'aurora', 'version')) as vfile:
-    version = vfile.read().strip()
-
 install_requires = open('requirements.txt').read().split('\n')
-    
-setup(name=package_name,
-      version=version,
-      description=long_description,
-      long_description_content_type='text/markdown',
-      url='https://github.com/fsciortino/Aurora',
-      author='F. Sciortino',
-      author_email='sciortino@psfc.mit.edu',
-      packages=['aurora'], #setuptools.find_packages(),
-      install_requires=install_requires,
-      include_package_data=True,
-      package_data={'':['aurora/version']},
-      ext_modules=[wrapper],
-      classifiers=['Programming Language :: Python :: 3',
-                   'Operating System :: OS Independent',
-                   ],
-      )
 
-# move shared-object library to ./aurora
-#filename = [filename for filename in os.listdir('.') if filename.startswith('_aurora')]
-#print(filename)
-#os.rename(filename, './aurora/'+filename)
+setup(
+    name=package_name,
+    version='0.1.7',
+    description=long_description,
+    long_description_content_type='text/markdown',
+    url='https://github.com/fsciortino/Aurora',
+    author='F. Sciortino',
+    author_email='sciortino@psfc.mit.edu',
+    packages=['aurora'], #setuptools.find_packages(),
+    #package_dir = {'aurora': 'aurora/adas_data'},
+    #package_data={'aurora': ['adas_data/*', 'adas_data/adf11/*','adas_data/adf15/*']},
+    include_package_data=True,
+    # https://stackoverflow.com/questions/13307408/python-packaging-data-files-are-put-properly-in-tar-gz-file-but-are-not-install
+    zip_safe=False,   
+    data_files = [('aurora_examples', ['examples/basic.py',
+                                       'examples/frac_abundances.py',
+                                       'examples/example.gfile',
+                                       'examples/example.input.gacode'])],
+    #setup_requires=["numpy"],
+    install_requires=install_requires,
+    ext_modules=[wrapper],
+    classifiers=['Programming Language :: Python :: 3',
+                 'Operating System :: OS Independent',
+    ],
+)

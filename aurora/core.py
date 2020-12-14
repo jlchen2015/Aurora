@@ -1,26 +1,27 @@
 '''This module includes the core class to set up simulations with :py:mod:`aurora`. The :py:class:`~aurora.core.aurora_sim` takes as input a namelist dictionary and a g-file dictionary (and possibly other optional argument) and allows creation of grids, interpolation of atomic rates and other steps before running the forward model.
 '''
-import scipy.io
+
 import copy,os,sys
 import numpy as np
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, RectBivariateSpline
 from scipy.constants import e as q_electron, m_p
 
-if not np.any([('sphinx' in k and not 'sphinxcontrib' in k) for k in sys.modules]):
-    # this if statement prevents issues with sphinx when building docs
-    from . import _aurora
+from . import interp
+from . import atomic
+from . import grids_utils
+from . import source_utils
+from . import particle_conserv
+from . import plot_tools
+from . import synth_diags
+import xarray
+
+# don't try to import compiled Fortran if building documentation or package:
+if not np.any([('sphinx' in k and not 'sphinxcontrib' in k) for k in sys.modules]) and\
+   not np.any([('distutils' in k.split('.') and 'command' in k.split('.')) for k in sys.modules]):
+    from ._aurora import run as fortran_run,time_steps
 
     import omfit_eqdsk
     from omfit_commonclasses.utils_math import atomic_element
-    
-    from . import interp
-    from . import atomic
-    from . import grids_utils
-    from . import source_utils
-    from . import particle_conserv
-    from . import plot_tools
-    from . import synth_diags
-    import xarray
 
 
 class aurora_sim:
@@ -67,7 +68,54 @@ class aurora_sim:
             )
         else:
             self.geqdsk = geqdsk
-            
+
+        self.Raxis_cm = self.geqdsk['RMAXIS']*100. # cm
+
+        # set up radial and temporal grids
+        self.setup_grids()
+
+        # set up kinetic profiles and atomic rates
+        self.setup_kin_profs_depts()
+
+        # create array of 0's of length equal to self.time_grid, with 1's where sawteeth must be triggered
+        self.saw_on = np.zeros_like(self.time_grid)
+        input_saw_times = self.namelist['saw_model']['times']
+        self.saw_times = np.array(input_saw_times)[input_saw_times<self.time_grid[-1]]
+        if self.namelist['saw_model']['saw_flag'] and len(self.saw_times)>0:
+            self.saw_on[self.time_grid.searchsorted(self.saw_times)] = 1
+
+        # get nuclear charge Z and atomic mass number A
+        out = atomic_element(symbol=self.imp)
+        spec = list(out.keys())[0]
+        self.Z_imp = int(out[spec]['Z'])
+        self.A_imp = int(out[spec]['A'])
+        
+        # Extract other inputs from namelist:
+        self.mixing_radius = self.namelist['saw_model']['rmix']
+        self.decay_length_boundary = self.namelist['SOL_decay']
+        self.wall_recycling = self.namelist['wall_recycling']
+        self.source_div_fraction = self.namelist['divbls']   # change of nomenclature
+        self.tau_div_SOL_ms = self.namelist['tau_div_SOL_ms']
+        self.tau_pump_ms = self.namelist['tau_pump_ms']
+        self.tau_rcl_ret_ms = self.namelist['tau_rcl_ret_ms']
+        
+        # if recycling flag is set to False, avoid any divertor return flows
+        # To include divertor return flows but no recycling, set wall_recycling=0
+        if not self.namelist['recycling_flag']:
+            self.wall_recycling = -1.0  # no divertor return flows
+
+        self.bound_sep = self.namelist['bound_sep']
+        self.lim_sep = self.namelist['lim_sep']
+        self.sawtooth_erfc_width = self.namelist['saw_model']['sawtooth_erfc_width']
+        self.cxr_flag = self.namelist['cxr_flag']
+        self.nbi_cxr_flag = self.namelist['nbi_cxr_flag']
+        
+
+        
+    def setup_grids(self):
+        '''Method to set up radial and temporal grids given namelist inputs.
+        '''
+        
         # Get r_V to rho_pol mapping
         rho_pol, _rvol = grids_utils.get_rhopol_rvol_mapping(self.geqdsk)
         rvol_lcfs = interp1d(rho_pol,_rvol)(1.0)
@@ -88,6 +136,10 @@ class aurora_sim:
         self.time_grid, self.save_time = grids_utils.create_time_grid(timing=self.namelist['timing'], plot=False)
         self.time_out = self.time_grid[self.save_time]
 
+
+    def setup_kin_profs_depts(self):
+        '''Method to set up Aurora inputs related to the kinetic background from namelist inputs.
+        '''        
         # get kinetic profiles on the radial and (internal) temporal grids
         self._ne,self._Te,self._Ti,self._n0 = self.get_aurora_kin_profs()
 
@@ -103,50 +155,32 @@ class aurora_sim:
         # Obtain atomic rates on the computational time and radial grids
         self.S_rates, self.R_rates = self.get_time_dept_atomic_rates()
         
-        # create array of 0's of length equal to self.time_grid, with 1's where sawteeth must be triggered
-        self.saw_on = np.zeros_like(self.time_grid)
-        input_saw_times = self.namelist['saw_model']['times']
-        self.saw_times = np.array(input_saw_times)[input_saw_times<self.time_grid[-1]]
-        if self.namelist['saw_model']['saw_flag'] and len(self.saw_times)>0:
-            self.saw_on[self.time_grid.searchsorted(self.saw_times)] = 1
+        if self.namelist['explicit_source_vals'] is not None:
 
-        # source function
-        self.Raxis_cm = self.geqdsk['RMAXIS']*100. # cm
-        self.source_time_history = source_utils.get_source_time_history(
-            self.namelist, self.Raxis_cm, self.time_grid
-        )
-        
-        # get radial profile of source function for each time step
-        self.source_rad_prof = source_utils.get_radial_source(self.namelist,
-                                                              self.rvol_grid, self.pro_grid,
-                                                              self.S_rates[:,0,:],   # 0th charge state (neutral)
-                                                              self._Ti)
+            # interpolate explicit source values on time and rhop grids of simulation
+            source_rad_prof = RectBivariateSpline(self.namelist['explicit_source_rhop'],
+                                                  self.namelist['explicit_source_time'],
+                                                  self.namelist['explicit_source_vals'].T,
+                                                  kx=1,ky=1)(self.rhop_grid, self.time_grid)
 
-        # get maximum Z of impurity ion
-        out = atomic_element(symbol=self.imp)
-        spec = list(out.keys())[0]
-        self.Z_imp = int(out[spec]['Z'])
-        self.A_imp = int(out[spec]['A'])
-        
-        # Extract other inputs from namelist:
-        self.mixing_radius = self.namelist['saw_model']['rmix']
-        self.decay_length_boundary = self.namelist['SOL_decay']
-        self.wall_recycling = self.namelist['wall_recycling']
-        self.source_div_fraction = self.namelist['divbls']   # change of nomenclature
-        self.tau_div_SOL_ms = self.namelist['tau_div_SOL_ms']
-        self.tau_pump_ms = self.namelist['tau_pump_ms']
-        self.tau_rcl_ret_ms = self.namelist['tau_rcl_ret_ms']
-        
-        # if recycling flag is set to False, then prevent any divertor return flows
-        # To include divertor return flows but no recycling, user should use wall_recycling=0
-        if not self.namelist['recycling_flag']:
-            self.wall_recycling = -1.0  # no divertor return flows
+            pnorm = np.pi*np.sum(source_rad_prof*self.S_rates[:,0,:]*(self.rvol_grid/self.pro_grid)[:,None],0)
+            self.source_time_history = np.asfortranarray(pnorm)
 
-        self.bound_sep = self.namelist['bound_sep']
-        self.lim_sep = self.namelist['lim_sep']
-        self.sawtooth_erfc_width = self.namelist['saw_model']['sawtooth_erfc_width']
-        self.cxr_flag = self.namelist['cxr_flag']
-        self.nbi_cxr_flag = self.namelist['nbi_cxr_flag']
+            # neutral density for influx/unit-length = 1/cm
+            self.source_rad_prof = np.asfortranarray(source_rad_prof/pnorm)
+
+        else:
+            self.source_time_history = source_utils.get_source_time_history(
+                self.namelist, self.Raxis_cm, self.time_grid
+            )
+            
+            # get radial profile of source function for each time step
+            self.source_rad_prof = source_utils.get_radial_source(self.namelist,
+                                                                  self.rvol_grid, self.pro_grid,
+                                                                  self.S_rates[:,0,:],   # 0th charge state (neutral)
+                                                                  self._Ti)
+
+
 
         
         
@@ -429,7 +463,7 @@ class aurora_sim:
                                      self.rvol_lcfs, self.bound_sep, self.lim_sep, self.prox_param,
                                      nz_init, alg_opt, evolneut)
         else:
-            self.res =  _aurora.run(len(self.time_out),  # number of times at which simulation outputs results
+            self.res =  fortran_run(len(self.time_out),  # number of times at which simulation outputs results
                                     times_DV,
                                     D_z, V_z, # cm^2/s & cm/s    #(ir,nt_trans,nion)
                                     self.par_loss_rate,  # time dependent
@@ -512,9 +546,23 @@ class aurora_sim:
         nz, N_wall, N_div, N_pump, N_ret, N_tsu, N_dsu, N_dsul, rcld_rate, rclw_rate = self.res
         nz = nz.transpose(2,1,0)   # time,nZ,space
 
+        if self.namelist['explicit_source_vals'] is None:
+            source_time_history = self.source_time_history
+        else:
+            # if explicit source was provided, all info about the source is in the source_rad_prof array
+            srp = xarray.Dataset({'source': ([ 'time','rvol_grid'], self.source_rad_prof.T),
+                                 'pro': (['rvol_grid'], self.pro_grid), 
+                                 'rhop_grid': (['rvol_grid'], self.rhop_grid)
+            },
+                                coords={'time': self.time_out, 
+                                        'rvol_grid': self.rvol_grid
+                                })
+            source_time_history = particle_conserv.vol_int(self.Raxis_cm, srp, 'source')
+
+        source_time_history = self.source_time_history
         # Check particle conservation
         ds = xarray.Dataset({'impurity_density': ([ 'time', 'charge_states','rvol_grid'], nz),
-                         'source_time_history': (['time'], self.source_time_history ),
+                         'source_time_history': (['time'], source_time_history ),
                          'particles_in_divertor': (['time'], N_div), 
                          'particles_in_pump': (['time'], N_pump), 
                          'parallel_loss': (['time'], N_dsu), 

@@ -5,14 +5,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import RectBivariateSpline, interp1d
 from matplotlib import cm
-import os, sys
+import os, sys, copy
 import scipy.ndimage
 from scipy.linalg import svd
 from scipy.constants import m_p, e as q_electron
 
-if not np.any([('sphinx' in k and not 'sphinxcontrib' in k) for k in sys.modules]):
-    # this if statement prevents issues with sphinx when building docs
-    from . import adas_files
+from . import adas_files
 
 
 def get_adas_file_types():
@@ -167,7 +165,7 @@ def get_atom_data(imp, filetypes=['acd','scd'], filenames=[]):
         filename = files[filetype]
 
         # find location of required ADF11 file
-        fileloc = adas_files.get_adas_file_loc(filename)
+        fileloc = adas_files.get_adas_file_loc(filename,filetype='adf11')
         
         # load specific file and add it to output dictionary
         res = adas_file(fileloc)
@@ -175,229 +173,6 @@ def get_atom_data(imp, filetypes=['acd','scd'], filenames=[]):
 
     return atom_data
 
-
-def read_adf15(path, order=1, Te_max = None, ne_max = None,
-               ax=None, plot_log=False, plot_3d=False,
-               recomb=False,
-               pec_plot_min=None,  pec_plot_max = None,
-               plot_lines=[]):
-    """Read photon emissivity coefficients from an ADF15 file.
-
-    Returns a dictionary whose keys are the wavelengths of the lines in
-    angstroms. The value is an interp2d instance that will evaluate the PEC at
-    a desired dens, temp.
-
-    Args:
-        path : str
-            Path to adf15 file to read.
-        order : int, opt
-            Parameter to control the order of interpolation.
-        recomb : bool, opt
-            If True, fetch recombination contributions to available lines. If False,
-            fetch only ionization contributions.
-
-        To plot PEC data:
-        
-        plot_lines : list
-            List of lines whose PEC data should be displayed. Lines should be identified
-            by their wavelengths. The list of available wavelengths in a given file can be retrieved
-            by first running this function ones, checking dictionary keys, and then requesting a
-            plot of one (or more) of them.
-        plot_log : bool
-            When plotting, set a log scale
-        plot_3d : bool
-            Display PEC data as a 3D plot rather than a 2D one.
-        pec_plot_min : float
-            Minimum value of PEC to visualize in a plot
-        pec_plot_max : float
-            Maximum value of PEC to visualize in a plot
-        ax : matplotlib axes instance
-            If not None, plot on this set of axes
-        Te_max : float
-            Maximum Te value to plot when len(plot_lines)>1
-        ne_max : float
-            Maximum ne value to plot when len(plot_lines)>1
-
-    Returns:
-        pec_dict : dict
-            Dictionary containing interpolation functions for each of the available lines of the
-            indicated type (ionization or recombination). Each interpolation function takes as arguments
-            the log-10 of ne and Te.
-
-    MWE:
-        path='/home/sciortino/atomlib/atomdat_master/adf15/h/pju#h0.dat'
-        pec = read_adf15(path, recomb=False)
-        pec = read_adf15(path, plot_lines=[list(pec.keys())[0]], recomb=False)
-
-    This function should work with PEC files produced via adas810 or adas218.
-
-    """
-    if plot_3d:
-        from mpl_toolkits.mplot3d import Axes3D
-
-    with open(path, 'r') as f:
-        lines = f.readlines()
-    cs = path.split('#')[-1].split('.dat')[0]
-
-    header = lines.pop(0)
-    # Get the expected number of lines by reading the header:
-    num_lines = int(header.split()[0])
-    pec_dict = {}
-
-    for i in range(0, num_lines):
-        # Get the wavelength, number of densities and number of temperatures
-        # from the first line of the entry:
-        l = lines.pop(0)
-        header = l.split()
-
-        # sometimes the wavelength and its units are not separated. Rough solution:
-        try:
-            #header = np.concatenate( [hh.split('A')[0] for hh in header])
-            header = [hh.split('A')[0] for hh in header]
-        except:
-            # lam and A are separated. Delete 'A' unit.
-            header = np.delete(header, 1)
-
-        try:
-            lam = float(header[0])
-        except ValueError:
-            # These lines appear to occur when lam has more digits than the
-            # allowed field width. For the moment, ignore these.
-            lam = None
-
-        if recomb and ('recom' not in l.lower()):
-            lam=None
-        elif not recomb and ('excit' not in l.lower()):
-            lam = None
-
-        try:
-            num_den = int(header[1])
-            num_temp = int(header[2])
-        except:
-            # 2nd element was empty -- annoyingly, this happens sometimes
-            num_den = int(header[2])
-            num_temp = int(header[3])
-
-        # Get the densities:
-        dens = []
-        while len(dens) < num_den:
-            dens += [float(v) for v in lines.pop(0).split()]
-        dens = scipy.asarray(dens)
-
-        # Get the temperatures:
-        temp = []
-        while len(temp) < num_temp:
-            temp += [float(v) for v in lines.pop(0).split()]
-        temp = scipy.asarray(temp)
-
-        # Get the PEC's:
-        PEC = []
-        while len(PEC) < num_den:
-            PEC.append([])
-            while len(PEC[-1]) < num_temp:
-                PEC[-1] += [float(v) for v in lines.pop(0).split()]
-        PEC = scipy.asarray(PEC)
-
-        if lam is not None:
-            if lam not in pec_dict:
-                pec_dict[lam] = []
-
-            pec_dict[lam].append(
-                scipy.interpolate.RectBivariateSpline(
-                    np.log10(dens),
-                    np.log10(temp),
-                    PEC,
-                    kx=order,
-                    ky=order
-                )
-            )
-
-            # {'dens': dens, 'temp': temp, 'PEC': PEC}
-            if lam in plot_lines:
-
-                # use log spacing for ne values
-                if ne_max is not None:
-                    # avoid overflow inside of np.logspace
-                    ne_eval = 10** np.linspace(np.log10(dens.min()), np.log10(ne_max), 10)
-                else:
-                    ne_eval = 10** np.linspace(np.log10(dens.min()), np.log10(dens.max()), 10)
-                    #scipy.logspace(dens.min(), dens.max(), 10)
-
-                # linear spacing for Te values
-                if Te_max is not None:
-                    Te_eval = scipy.linspace(temp.min(), Te_max*1000, 100)
-                else:
-                    Te_eval = scipy.linspace(temp.min(), temp.max(), 100)
-
-                NE, TE = scipy.meshgrid(ne_eval, Te_eval)
-                PEC_eval = pec_dict[lam][-1].ev(np.log10(NE), np.log10(TE))
-
-                if ax is None:
-                    f1 = plt.figure()
-                    if plot_3d:
-                        ax1 = f1.add_subplot(1,1,1, projection='3d')
-                    else:
-                        ax1 = f1.add_subplot(1,1,1)
-                else:
-                    ax1 = ax
-
-                if plot_3d:
-
-                    # linear scales (log doesn't work in matplotlib 3D)
-                    # but can do all plotting on log quantities
-                    if plot_log:
-                        logNE, logTE = scipy.meshgrid(np.log10(ne_eval), np.log10(Te_eval))
-                        ax1.plot_surface(logNE, logTE, PEC_eval, alpha=0.5)
-                    else:
-                        ax1.plot_surface(NE, TE, PEC_eval, alpha=0.5)
-
-                    if plot_log:
-                        dens = np.log10(dens); temp = np.log10(temp)
-
-                    if Te_max is None and ne_max is None:
-                        DENS, TEMP = scipy.meshgrid(dens, temp)
-                        ax1.scatter(DENS.ravel(), TEMP.ravel(), PEC.T.ravel(), color='b')
-                    elif Te_max is not None and ne_max is None:
-                        Te_max_ind = np.argmin(np.abs(temp - Te_max*1000))
-                        DENS, TEMP = scipy.meshgrid(dens, temp[:Te_max_ind+1])
-                        ax1.scatter(DENS.ravel(), TEMP.ravel(), PEC[:,:Te_max_ind+1].T.ravel(), color='b')
-                    elif Te_max is None and ne_max is not None:
-                        ne_max_ind = np.argmin(np.abs(dens - ne_max))
-                        DENS, TEMP = scipy.meshgrid(dens[:ne_max_ind+1], temp)
-                        ax1.scatter(DENS.ravel(), TEMP.ravel(), PEC[:ne_max_ind+1,:].T.ravel(), color='b')
-                    elif Te_max is not None and ne_max is not None:
-                        Te_max_ind = np.argmin(np.abs(temp - Te_max*1000))
-                        ne_max_ind = np.argmin(np.abs(dens - ne_max))
-                        DENS, TEMP = scipy.meshgrid(dens[:ne_max_ind+1], temp[:Te_max_ind+1])
-                        ax1.scatter(DENS.ravel(), TEMP.ravel(), PEC[:ne_max_ind+1,:Te_max_ind+1].T.ravel(), color='b')
-
-                    if ax is None:
-                        ax1.set_xlabel('$n_e$ [cm$^{-3}$]')
-                        ax1.set_ylabel('$T_e$ [eV]')
-
-                        ax1.set_zlabel('PEC')
-                        ax1.set_title(cs + r' --- $\lambda$ = '+str(lam) +' A')
-                        plt.tight_layout()
-
-                else:
-
-                    # plot in 2D
-                    labels = ['{:.0e}'.format(ne)+r' $cm^{-3}$' for ne in ne_eval]
-                    for ine in np.arange(PEC_eval.shape[1]):
-                        ax1.plot(Te_eval, PEC_eval[:,ine], label=labels[ine])
-                    ax1.set_xlabel(r'$T_e$ [kev]')
-                    ax1.set_ylabel('PEC')
-                    ax1.set_yscale('log')
-                    if pec_plot_min is not None:
-                        ax1.set_ylim([pec_plot_min, ax1.get_ylim()[1]])
-                    if pec_plot_max is not None:
-                        ax1.set_ylim([ax1.get_ylim()[0], pec_plot_max ])
-
-                    ax1.legend(loc='best').set_draggable(True)
-                    ax1.set_title(cs + r' --- $\lambda$ = '+str(lam) +' A')
-
-
-    return pec_dict
 
 
 
@@ -409,10 +184,14 @@ def null_space(A):
     return Q, s[-2]  # matrix is singular, so last index is ~0
 
 
-def get_frac_abundances(atom_data, ne_cm3,Te_eV=None, n0_by_ne=1e-5, include_cx=False, ne_tau=np.inf, 
+def get_frac_abundances(atom_data, ne_cm3, Te_eV=None, n0_by_ne=1e-5,
+                        include_cx=False, ne_tau=np.inf,
                         plot=True, ax = None, rho = None, rho_lbl=None,ls='-'):
     '''Calculate fractional abundances from ionization and recombination equilibrium.
     If include_cx=True, radiative recombination and thermal charge exchange are summed.
+
+    This method can work with ne,Te and n0_by_ne arrays of arbitrary dimension, but plotting 
+    is only supported in 1D (defaults to flattened arrays).
 
     Args:
         atom_data : dictionary of atomic ADAS files (only acd, scd are required; ccd is 
@@ -448,22 +227,36 @@ def get_frac_abundances(atom_data, ne_cm3,Te_eV=None, n0_by_ne=1e-5, include_cx=
             rate coefficients are given.
         fz : array, (space,nZ)
             Fractional abundances across the same grid used by the input ne,Te values. 
-        rate_coeff : array, (space, nZ)
+        rate_coeffs : array, (space, nZ)
             Rate coefficients in units of [s^-1]. 
 
     '''
+    # if input arrays are multi-dimensional, flatten them here and restructure at the end
+    if not isinstance(ne_cm3,float):
+        _ne = ne_cm3.flatten()
+    else:
+        _ne = copy.deepcopy(ne_cm3)
+    if not isinstance(Te_eV,float): 
+        _Te = Te_eV.flatten()
+    else:
+        _Te = copy.deepcopy(Te_eV)
+    if not isinstance(n0_by_ne,float):
+        _n0_by_ne = n0_by_ne.flatten()
+    else:
+        _n0_by_ne = copy.deepcopy(n0_by_ne)
 
-    logTe, logS,logR,logcx = get_cs_balance_terms(atom_data,ne_cm3,Te_eV,maxTe=10e3,include_cx=include_cx)
+    logTe, logS,logR,logcx = get_cs_balance_terms(
+        atom_data, _ne, _Te, maxTe=10e3, include_cx=include_cx)
     
     if include_cx:
         # Get an effective recombination rate by summing radiative & CX recombination rates
-        logR= np.logaddexp(logR,np.log(n0_by_ne)[:,None] +logcx)
-        
+        logR= np.logaddexp(logR,np.log(_n0_by_ne)[:,None] +logcx)
 
-    # numerical method which calculates also rate_coeff
+    # numerical method that calculates also rate_coeffs
     nion = logR.shape[1]
     fz  = np.zeros((logTe.size,nion+1))
-    rate_coeff = np.zeros(logTe.size)
+    rate_coeffs = np.zeros(logTe.size)
+
     for it,t in enumerate(logTe):
 
         A = (
@@ -472,13 +265,13 @@ def get_frac_abundances(atom_data, ne_cm3,Te_eV=None, n0_by_ne=1e-5, include_cx=
               + np.diag(np.exp(logR[it]), 1)
               )
 
-        N,rate_coeff[it] = null_space(A)
+        N,rate_coeffs[it] = null_space(A)
         fz[it] = N/np.sum(N)
 
-    rate_coeff*=(ne_cm3 * 1e-6)
+    rate_coeffs*=(_ne * 1e-6)
 
     if plot:
-        # plot fractional abundances
+        # plot fractional abundances (only 1D)
         if ax is None:
             fig,axx = plt.subplots()
         else:
@@ -499,7 +292,7 @@ def get_frac_abundances(atom_data, ne_cm3,Te_eV=None, n0_by_ne=1e-5, include_cx=
         x_fine = np.linspace(np.min(x), np.max(x),10000)
         for cs in range(fz.shape[1]):
             fz_i = interp1d(x, fz[:,cs], kind='cubic')(x_fine)
-            axx.plot(x_fine, fz_i)
+            axx.plot(x_fine, fz_i, ls=ls)
             imax = np.argmax(fz_i)
             axx.text(np.max([0.05,x_fine[imax]]), fz_i[imax], cs,
                      horizontalalignment='center', clip_on=True)
@@ -507,10 +300,12 @@ def get_frac_abundances(atom_data, ne_cm3,Te_eV=None, n0_by_ne=1e-5, include_cx=
         axx.set_ylim(0,1.05)
         axx.set_xlim(x[0],x[-1])
 
-    else:
-        axx = None    
-
-    return logTe, fz, rate_coeff
+    # re-structure to original array dimensions
+    logTe = logTe.reshape(ne_cm3.shape)
+    fz = fz.reshape(*ne_cm3.shape, fz.shape[1])
+    rate_coeffs = rate_coeffs.reshape(*ne_cm3.shape)
+    
+    return logTe, fz, rate_coeffs
 
 
 

@@ -25,7 +25,20 @@ def download_ehr5_file():
     
 
 class ehr5_file:
-    ''' Read ehr5.dat file from DEGAS2. '''
+    ''' Read ehr5.dat file from DEGAS2. 
+    Returns a dictionary containing
+
+    - Ionization rate Seff in :math:`cm^3 s^{-1}`
+    - Recombination rate Reff in :math:`cm^3 s^{-1}`
+    - Neutral electron losses :math:`E_{loss}^{(i)}` in :math:`erg s^{-1}`
+    - Continuum electron losses :math:`E_{loss}^{(ii)}` in :math:`erg s^{-1}`
+    - Neutral “n=2 / n=1”, :math:`N_2^{(i)}/N_1`
+    - Continuum “n=2 / n=1”, :math:`N_2^{(ii)}/N_11
+    - Neutral “n=3 / n=1”, :math:`N_3^{(i)}/N_1`
+    - Continuum “n=3 / n=1”, :math:`N_3^{(ii)}/N_1`
+    
+    ... and similarly for n=4 to 9. Refer to the DEGAS2 manual for details.
+    '''
 
     def __init__(self, filepath=None):
         '''Load ehr5.dat file, either from the indicated path or by downloading it locally. 
@@ -124,27 +137,34 @@ def get_exc_state_ratio(m, N1, ni, ne, Te, rad_prof=None, rad_label=r'rmin [cm]'
     This function is not l-resolved.
 
     The function returns
-    $ N_m/N_1 = \left( \frac{N_m^i}{N_1} \right) N_m + \left(\frac{N_m^{ii}}{n_i} \right) n_i
-    where N_m is the number of electrons in the excited state m, N_1 is the number in the ground state,
-    and n_i is the density of ions that could recombine.
-    `i' and `ii' indicate terms corresponding to coupling to the ground state and to the continuum,
-    respectively.
+
+    .. math::
+
+        N_m/N_1 = \left( \frac{N_m^i}{N_1} \right) N_m + \left(\frac{N_m^{ii}}{n_i} \right) n_i
+
+
+    where :math:`N_m` is the number of electrons in the excited state :math:`m`, :math:`N_1` 
+    is the number in the ground state, and :math:`n_i` is the density of ions that could recombine.
+    :math:`i` and :math:`ii` indicate terms corresponding to coupling to the ground state and to 
+    the continuum, respectively.
 
     Ref.: DEGAS2 manual.
 
     Args:
         m : int
             Principal quantum number of excited state of interest. 2<m<10
-        N1 : float or list [cm^-3]
+        N1 : float, list or 1D-array [:math:`cm^-3`]
             Density of ions in the ground state. This must have the same shape as ni!
-        ni : float or list [cm^-3]
+        ni : float, list or 1D-array [:math:`cm^-3`]
             Density of ions corresponding to the atom under consideration. This must
             have the same shape as N1!
-        ne : float or 1D array of floats [cm^-3]
+        ne : float, list or 1D-array [:math:`cm^-3`]
             Electron density to evaluate atomic rates at.
-        Te : float or 1D array of floats [eV]
+        Te : float, list or 1D-array [:math:`eV`]
             Electron temperature to evaluate atomic rates at.
-        rad_prof : 1D array or None
+
+    Keyword Args:
+        rad_prof : list, 1D array or None
             If None, excited state densities are evaluated at all the combinations of ne,Te and zip(Ni,ni).
             If a 1D array (same length as ne,Te,ni and N1), then this is taken to be a radial coordinate
             for radial profiles of ne,Te,ni and N1.
@@ -155,7 +175,7 @@ def get_exc_state_ratio(m, N1, ni, ne, Te, rad_prof=None, rad_label=r'rmin [cm]'
 
     Returns:
         Nm : array of shape [len(ni)=len(N1),len(ne),len(Te)]
-            Density of electrons in excited state `n`  [cm^-3]
+            Density of electrons in excited state `n`  [:math:`cm^-3`]
     """
     if m < 1:
         raise ValueError('Excited state principal quantum number must be greater than 1!')
@@ -234,20 +254,20 @@ def get_exc_state_ratio(m, N1, ni, ne, Te, rad_prof=None, rad_label=r'rmin [cm]'
 
 def plot_exc_ratios(n_list=[2, 3, 4, 5, 6, 7, 8, 9], ne=1e13, ni=1e13, Te=50, N1=1e12, 
                     ax=None, ls='-', c='r', label=None):
-    """Plot N_i/N_1, i.e. the ratio of hydrogen neutral density in the excited state `i`
+    """Plot :math:`N_i/N_1`, the ratio of hydrogen neutral density in the excited state `i`
     and the ground state, for given electron density and temperature.
 
     Args:
         n_list : list of integers
             List of excited states (principal quantum numbers) to consider.
         ne : float
-            Electron density in cm^-3.
+            Electron density in :math:`cm^-3`.
         ni : float
-            Ionized hydrogen density [cm^-3]. This may be set equal to ne for a pure plasma.
+            Ionized hydrogen density [:math:`cm^-3`]. This may be set equal to ne for a pure plasma.
         Te : float
-            Electron temperature in eV.
+            Electron temperature in :math:`eV`.
         N1 : float
-            Density of ground state hydrogen [cm^-3]. This is needed because the excited
+            Density of ground state hydrogen [:math:`cm^-3`]. This is needed because the excited
             state fractions depend on the balance of excitation from the ground state and
             coupling to the continuum.
 

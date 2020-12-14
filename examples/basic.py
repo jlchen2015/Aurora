@@ -8,20 +8,25 @@ import numpy as np
 import matplotlib.pyplot as plt
 plt.ion()
 import omfit_eqdsk, omfit_gapy
-import sys
+import sys, os
 from scipy.interpolate import interp1d
 
 # Make sure that package home is added to sys.path
-import sys
 sys.path.append('../')
 import aurora
+
+try: # pass any argument via the command line to show plots
+    plot = len(sys.argv)>1
+except:
+    plot = False
 
 # read in default Aurora namelist
 namelist = aurora.default_nml.load_default_namelist()
 
 # Use gfile and statefile in local directory:
-geqdsk = omfit_eqdsk.OMFITgeqdsk('example.gfile')
-inputgacode = omfit_gapy.OMFITgacode('example.input.gacode')
+examples_dir = os.path.dirname(os.path.abspath(__file__))
+geqdsk = omfit_eqdsk.OMFITgeqdsk(examples_dir+'/example.gfile')
+inputgacode = omfit_gapy.OMFITgacode(examples_dir+'/example.input.gacode')
 
 # save kinetic profiles on a rhop (sqrt of norm. pol. flux) grid
 kp = namelist['kin_profs']
@@ -33,10 +38,6 @@ kp['Te']['vals'] = inputgacode['Te']*1e3  # keV --> eV
 imp = namelist['imp'] = 'Ar'
 namelist['source_type'] = 'const'
 namelist['Phi0'] = 2e20  # particles/s
-
-# load impurity source time history from a file on disk:
-#namelist['source_type'] = 'file'
-#namelist['source_file'] = '/home/sciortino/BITE/1101014030/source_function_1101014030.dat.0'
 
 # Change radial resolution from default:
 #namelist['dr_0']=0.2
@@ -52,17 +53,17 @@ namelist['Phi0'] = 2e20  # particles/s
 asim = aurora.core.aurora_sim(namelist, geqdsk=geqdsk)
 
 # check radial grid:
-_ = aurora.create_radial_grid(namelist,plot=True)
+_ = aurora.create_radial_grid(namelist,plot=plot)
 
 # check time grid:
-_ = aurora.create_time_grid(namelist['timing'], plot=True)
+_ = aurora.create_time_grid(namelist['timing'], plot=plot)
 
 # set time-independent transport coefficients (flat D=1 m^2/s, V=-2 cm/s)
 D_z = 1e4 * np.ones(len(asim.rvol_grid))  # cm^2/s
 V_z = -2e2 * np.ones(len(asim.rvol_grid)) # cm/s
 
 # run Aurora forward model and plot results
-out = asim.run_aurora(D_z, V_z, plot=True)
+out = asim.run_aurora(D_z, V_z, plot=plot)
 
 # extract densities and particle numbers in each simulation reservoir
 nz, N_wall, N_div, N_pump, N_ret, N_tsu, N_dsu, N_dsul, rcld_rate, rclw_rate = out
@@ -72,23 +73,24 @@ asim.rad = aurora.compute_rad(imp, nz.transpose(2,1,0), asim.ne, asim.Te,
                               prad_flag=True, thermal_cx_rad_flag=False, 
                               spectral_brem_flag=False, sxr_flag=False)
 
-# plot radiation profiles over radius and time
-aurora.slider_plot(asim.rvol_grid, asim.time_out, asim.rad['line_rad'].transpose(1,2,0),
-                              xlabel=r'$r_V$ [cm]', ylabel='time [s]', zlabel=r'Line radiation [$MW/m^3$]',
-                              labels=[str(i) for i in np.arange(0,nz.shape[1])],
-                              plot_sum=True, x_line=asim.rvol_lcfs)
+if plot:
+    # plot radiation profiles over radius and time
+    aurora.slider_plot(asim.rvol_grid, asim.time_out, asim.rad['line_rad'].transpose(1,2,0),
+                       xlabel=r'$r_V$ [cm]', ylabel='time [s]', zlabel=r'Line radiation [$MW/m^3$]',
+                       labels=[str(i) for i in np.arange(0,nz.shape[1])],
+                       plot_sum=True, x_line=asim.rvol_lcfs)
 
 
 # plot Delta-Zeff profiles over radius and time
 asim.calc_Zeff()
 
-# plot variation of Zeff due to simulated impurity:
-aurora.slider_plot(asim.rvol_grid, asim.time_out, asim.delta_Zeff.transpose(1,0,2),
-                              xlabel=r'$r_V$ [cm]', ylabel='time [s]', zlabel=r'$\Delta$ $Z_{eff}$',
-                              labels=[str(i) for i in np.arange(0,nz.shape[1])],
-                              plot_sum=True,x_line=asim.rvol_lcfs)
-
-
+if plot:
+    # plot variation of Zeff due to simulated impurity:
+    aurora.slider_plot(asim.rvol_grid, asim.time_out, asim.delta_Zeff.transpose(1,0,2),
+                       xlabel=r'$r_V$ [cm]', ylabel='time [s]', zlabel=r'$\Delta$ $Z_{eff}$',
+                       labels=[str(i) for i in np.arange(0,nz.shape[1])],
+                       plot_sum=True,x_line=asim.rvol_lcfs)
+    
 
 # plot expected centrifugal asymmetry from finite rotation
 rhop_gacode = aurora.rad_coord_transform(inputgacode['rho'],'rhon','rhop', asim.geqdsk)
@@ -102,4 +104,4 @@ Zeff = interp1d(rhop_gacode[:-1], inputgacode['z_eff'][:-1],
                  bounds_error=False,fill_value='extrapolate')(asim.rhop_grid)
 
 # Obtain estimates for centrifigal asymmetry and plot expected 2D distribution inside LCFS
-asim.centrifugal_asym(omega, Zeff, plot=True)
+asim.centrifugal_asym(omega, Zeff, plot=plot)

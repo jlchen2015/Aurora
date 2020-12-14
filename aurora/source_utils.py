@@ -9,9 +9,11 @@ import copy,sys
 from scipy.constants import m_p, e as q_electron
 from scipy.special import erfc
 
-if not np.any([('sphinx' in k and not 'sphinxcontrib' in k) for k in sys.modules]):
-    # this if statement prevents issues with sphinx when building docs
+# don't try to import when building documentation or package
+if not np.any([('sphinx' in k and not 'sphinxcontrib' in k) for k in sys.modules]) and\
+   not np.any([('distutils' in k.split('.') and 'command' in k.split('.')) for k in sys.modules]):
     from omfit_commonclasses.utils_math import atomic_element
+
 
 def get_source_time_history(namelist, Raxis_cm, time):
     '''Load source time history based on current state of the namelist.
@@ -99,7 +101,7 @@ def get_source_time_history(namelist, Raxis_cm, time):
     # number of particles per cm and sec
     source_time_history = np.r_[source[1:],0]/circ #NOTE source in STRAHL is by one timestep shifted
 
-    return source_time_history
+    return np.asfortranarray(source_time_history)
 
 
 
@@ -150,7 +152,7 @@ def read_source(filename):
         lines = f.read()
     for line in lines.split('\n')[1:]:  # first line contains number of lines
         line = line.strip()
-        if line is not '':
+        if line != '':
             t.append(float(line.split()[0]))
             s.append(float(line.split()[1]))
     t = np.array(t)
@@ -232,6 +234,8 @@ def get_radial_source(namelist, rvol_grid, pro_grid, S_rates, Ti_eV=None):
             Normalized first derivatives of the radial grid in volume-normalized coordinates. 
         S_rates : array (nr,nt)
             Ionization rate of neutral impurity over space and time.
+
+    Keyword Args:
         Ti_eV : array, optional (nr,nt)
             Background ion temperature, only used if source_width_in=source_width_out=0.0 and 
             imp_source_energy_eV<=0, in which case the source impurity neutrals are taken to 
@@ -286,7 +290,8 @@ def get_radial_source(namelist, rvol_grid, pro_grid, S_rates, Ti_eV=None):
         #integration of ne*S for atoms and calculation of ionization length for normalizing neutral density
         source_rad_prof[i_src]= -0.0625*S_rates[i_src]/pro_grid[i_src]/v[i_src]   #1/16
         for i in np.arange(i_src-1,0,-1):
-            source_rad_prof[i]=source_rad_prof[i+1]+0.25*(S_rates[i+1]/pro_grid[i+1]/v[i+1] + S_rates[i]/pro_grid[i]/v[i])
+            source_rad_prof[i]=source_rad_prof[i+1]+0.25*(
+                S_rates[i+1]/pro_grid[i+1]/v[i+1] + S_rates[i]/pro_grid[i]/v[i])
 
         #prevents FloatingPointError: underflow encountered
         source_rad_prof[1:i_src] = np.exp(np.maximum(source_rad_prof[1:i_src],-100))
@@ -305,9 +310,9 @@ def get_radial_source(namelist, rvol_grid, pro_grid, S_rates, Ti_eV=None):
 
 
     # total ion source
-    pnorm = np.pi*np.sum(source_rad_prof*S_rates*(rvol_grid/pro_grid)[:,None],0)
-
-    # neutral density for influx/unitlength = 1/cm
+    pnorm = np.pi*np.sum(source_rad_prof*S_rates*(rvol_grid/pro_grid)[:,None],0)  # sum over radius
+    
+    # neutral density for influx/unit-length = 1/cm
     source_rad_prof /= pnorm
 
     return np.asfortranarray(source_rad_prof)
